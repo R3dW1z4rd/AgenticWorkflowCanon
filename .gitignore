@@ -1,0 +1,19 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Discovery agent workspace contents (the actual output of discovery sessions)
+# Workspace folders are kept (with .gitkeep) but their contents are project-specific
+templates/discovery-agent-codex/workspace/*
+!templates/discovery-agent-codex/workspace/.gitkeep
+templates/discovery-agent-cc/workspace/*
+!templates/discovery-agent-cc/workspace/.gitkeep
+
+# Sync stamps from individual projects (not relevant to canon repo)
+.canon-version

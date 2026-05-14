@@ -1,0 +1,256 @@
+name: Update Project State
+
+# Runs when a PR is merged into main.
+# Parses the branch name to identify (module, phase, story).
+# Updates docs/project-state.md with the phase completion.
+# Closes the issue if all four phases are now complete.
+#
+# Branch naming expected: feat/[module-slug]-phase[N]-[description]-US-XXX
+# Example: feat/contracts-phase5-schema-US-006
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  update-state:
+    # Only run when the PR was actually merged (not just closed)
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # Required to commit the state file update
+      issues: write         # Required to close the issue when all phases done
+      pull-requests: read   # Required to read the merged PR
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Parse branch name
+        id: parse
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          echo "Branch: $BRANCH"
+
+          # Match: feat/[module]-phase[N]-[anything]-US-XXX
+          # Tolerant of underscores, dashes, alphanumeric
+          if [[ "$BRANCH" =~ ^feat/([a-z0-9-]+)-phase([5-8])-.+-US-([0-9]+)$ ]]; then
+            MODULE="${BASH_REMATCH[1]}"
+            PHASE="${BASH_REMATCH[2]}"
+            STORY="US-${BASH_REMATCH[3]}"
+            echo "module=$MODULE"  >> "$GITHUB_OUTPUT"
+            echo "phase=$PHASE"    >> "$GITHUB_OUTPUT"
+            echo "story=$STORY"    >> "$GITHUB_OUTPUT"
+            echo "should_update=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Parsed: module=$MODULE, phase=$PHASE, story=$STORY"
+          else
+            echo "⚠️  Branch name doesn't match expected pattern."
+            echo "   Expected: feat/[module]-phase[5-8]-[description]-US-XXX"
+            echo "   Got:      $BRANCH"
+            echo "   Skipping state update."
+            echo "should_update=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update project-state.md
+        if: steps.parse.outputs.should_update == 'true'
+        env:
+          MODULE: ${{ steps.parse.outputs.module }}
+          PHASE:  ${{ steps.parse.outputs.phase }}
+          STORY:  ${{ steps.parse.outputs.story }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          STATE_FILE="docs/project-state.md"
+
+          if [ ! -f "$STATE_FILE" ]; then
+            echo "❌ $STATE_FILE not found. Cannot update state."
+            exit 1
+          fi
+
+          # Use Python for reliable in-place updates (sed is fragile for markdown tables)
+          python3 << 'PYEOF'
+          import os
+          import re
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          state_path = Path("docs/project-state.md")
+          module = os.environ["MODULE"]
+          phase  = int(os.environ["PHASE"])
+          story  = os.environ["STORY"]
+          pr_num = os.environ["PR_NUM"]
+
+          content = state_path.read_text(encoding="utf-8")
+          today   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+          # ── 1. Update the Phases column for this story ──────────────────
+          # Find the row containing this story ID and update its phases column.
+          # Phases column format: [☐ ☐ ☐ ☐] for phases 5/6/7/8
+          # We replace the (phase-5)th ☐ with ✓.
+          def update_phases_cell(match):
+              cell = match.group(0)
+              # Find the 4 checkbox characters in order
+              checkboxes = re.findall(r'[☐✓]', cell)
+              if len(checkboxes) != 4:
+                  return cell
+              idx = phase - 5  # phase 5 → index 0, phase 8 → index 3
+              checkboxes[idx] = '✓'
+              # Reconstruct the cell with updated boxes
+              new_cell = re.sub(r'[☐✓]', lambda m: checkboxes.pop(0), cell)
+              return new_cell
+
+          # Locate the story's row in the current sprint table.
+          # Row format: | US-XXX | title | module | status | phases | notes |
+          story_row_pattern = rf'^(\| {re.escape(story)} \|.*?\|.*?\|.*?\| )([☐✓\s]+)( \|.*)$'
+
+          def row_replacer(line_match):
+              prefix      = line_match.group(1)
+              phases_part = line_match.group(2)
+              suffix      = line_match.group(3)
+              # Parse the 4 checkboxes in the phases_part
+              boxes = re.findall(r'[☐✓]', phases_part)
+              if len(boxes) == 4:
+                  boxes[phase - 5] = '✓'
+                  new_phases = ' '.join(boxes)
+                  return f"{prefix}{new_phases}{suffix}"
+              return line_match.group(0)
+
+          content = re.sub(
+              story_row_pattern,
+              row_replacer,
+              content,
+              flags=re.MULTILINE,
+          )
+
+          # ── 2. Update the story's status based on phase count ───────────
+          # Count how many ✓ marks the story has after the update
+          row_match = re.search(
+              rf'\| {re.escape(story)} \|[^\n]*',
+              content,
+          )
+          if row_match:
+              row = row_match.group(0)
+              done_count = row.count('✓')
+
+              if done_count == 0:
+                  new_status = "open"
+              elif done_count < 4:
+                  new_status = "in-progress"
+              else:
+                  new_status = "closed"
+
+              # Update the status field in the row (4th column)
+              # Row format: | US-XXX | title | module | STATUS | phases | notes |
+              updated_row = re.sub(
+                  rf'(\| {re.escape(story)} \| [^|]* \| [^|]* \| )[^|]*( \|)',
+                  rf'\g<1>{new_status}\g<2>',
+                  row,
+              )
+              content = content.replace(row, updated_row, 1)
+
+          # ── 3. Update module status if this was Phase 8 ──────────────────
+          if phase == 8:
+              # Find the module row in the Module status table.
+              # Row format: | name | slug | highest phase complete | stories | last touched | notes |
+              module_row_pattern = rf'(\| [^|]+\| `?{re.escape(module)}`? \| )[^|]*( \|)'
+              content = re.sub(
+                  module_row_pattern,
+                  rf'\g<1>phase 8 done (module live)\g<2>',
+                  content,
+              )
+
+          # ── 4. Append to Recent activity section ─────────────────────────
+          activity_entry = f"[{today}] state: {story} phase {phase} merged (PR #{pr_num})"
+
+          # Find the recent activity code block and prepend the new entry
+          activity_block = re.search(
+              r'(## Recent activity\s*\n.*?```\n)(.*?)(```)',
+              content,
+              flags=re.DOTALL,
+          )
+          if activity_block:
+              header  = activity_block.group(1)
+              entries = activity_block.group(2).strip().split('\n') if activity_block.group(2).strip() else []
+              closer  = activity_block.group(3)
+              # Add new entry at top, keep newest 10
+              entries.insert(0, activity_entry)
+              entries = entries[:10]
+              new_block = header + '\n'.join(entries) + '\n' + closer
+              content = content.replace(activity_block.group(0), new_block)
+
+          state_path.write_text(content, encoding="utf-8")
+          print(f"✅ Updated {state_path}: {story} phase {phase} → done")
+          PYEOF
+
+      - name: Commit state update
+        if: steps.parse.outputs.should_update == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet docs/project-state.md; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          STORY="${{ steps.parse.outputs.story }}"
+          PHASE="${{ steps.parse.outputs.phase }}"
+
+          git add docs/project-state.md
+          git commit -m "state: $STORY phase $PHASE merged"
+          git push origin main
+
+      - name: Find linked issue number
+        if: steps.parse.outputs.should_update == 'true'
+        id: find_issue
+        env:
+          STORY:        ${{ steps.parse.outputs.story }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Search for an open issue with this story ID in the title
+          ISSUE_NUM=$(gh issue list --state open --search "$STORY in:title" --json number --jq '.[0].number // empty')
+
+          if [ -n "$ISSUE_NUM" ]; then
+            echo "issue_number=$ISSUE_NUM" >> "$GITHUB_OUTPUT"
+            echo "Found issue #$ISSUE_NUM for $STORY"
+          else
+            echo "issue_number=" >> "$GITHUB_OUTPUT"
+            echo "No open issue found for $STORY (may already be closed)"
+          fi
+
+      - name: Update or close issue
+        if: steps.parse.outputs.should_update == 'true' && steps.find_issue.outputs.issue_number != ''
+        env:
+          STORY:        ${{ steps.parse.outputs.story }}
+          PHASE:        ${{ steps.parse.outputs.phase }}
+          ISSUE_NUM:    ${{ steps.find_issue.outputs.issue_number }}
+          PR_NUM:       ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Tick the phase checkbox in the issue body and post a comment.
+          # If this was phase 8, close the issue too.
+
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body --jq '.body')
+
+          # Tick the matching phase checkbox.
+          # Issue body has lines like "- [ ] **Phase 5 — Schema & Contracts**..."
+          UPDATED_BODY=$(echo "$ISSUE_BODY" | python3 -c "
+          import sys, re
+          phase = '$PHASE'
+          body  = sys.stdin.read()
+          # Match: - [ ] **Phase N
+          pattern = rf'^- \[ \] (\*\*Phase {phase} )'
+          body = re.sub(pattern, rf'- [x] \1', body, flags=re.MULTILINE)
+          print(body, end='')
+          ")
+
+          gh issue edit "$ISSUE_NUM" --body "$UPDATED_BODY"
+          gh issue comment "$ISSUE_NUM" --body "✅ Phase $PHASE merged (PR #$PR_NUM). State updated."
+
+          if [ "$PHASE" = "8" ]; then
+            gh issue close "$ISSUE_NUM" --comment "All four phases complete. Closing."
+            echo "✅ Issue #$ISSUE_NUM closed (all phases done)"
+          fi
