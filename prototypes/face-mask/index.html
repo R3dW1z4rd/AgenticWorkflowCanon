@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portrait Mask Prototype</title>
+<style>
+  :root { --bg:#14110f; --panel:#1f1a16; --ink:#e9e1d3; --muted:#a3978a; --accent:#c9a45c; --line:#3a312a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 system-ui, sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; font-family: Georgia, serif; color:var(--accent); }
+  header p { margin:4px 0 0; color:var(--muted); }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 300px; gap:16px; padding:16px 20px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .stage { position:relative; background:#000; border:1px solid var(--line); border-radius:8px; overflow:hidden; aspect-ratio: 4/3; }
+  #out { width:100%; height:100%; object-fit:contain; transform:scaleX(-1); display:block; }
+  #status { position:absolute; left:10px; bottom:10px; background:rgba(0,0,0,.65); padding:4px 8px; border-radius:4px; font-size:12px; }
+  aside { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; display:flex; flex-direction:column; gap:14px; }
+  fieldset { border:1px solid var(--line); border-radius:6px; padding:10px; margin:0; display:flex; flex-direction:column; gap:8px; }
+  legend { color:var(--accent); padding:0 4px; }
+  label { display:flex; justify-content:space-between; align-items:center; gap:8px; color:var(--muted); }
+  input[type=range] { width:140px; }
+  button, .file { background:#2b241e; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:7px 10px; cursor:pointer; font:inherit; text-align:center; }
+  button:hover, .file:hover { border-color:var(--accent); }
+  .file input { display:none; }
+  #portraitThumb { width:100%; max-height:160px; object-fit:contain; background:#000; border-radius:4px; display:none; }
+  #preview { width:100%; background:#000; border-radius:4px; display:none; }
+  small { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Portrait Mask: prototype M0</h1>
+  <p>Load a painted portrait. It gets mapped onto your face mesh live, entirely in your browser. Nothing is uploaded.</p>
+</header>
+<main>
+  <div class="stage">
+    <canvas id="out" width="640" height="480"></canvas>
+    <div id="status">Loading face tracker…</div>
+  </div>
+  <aside>
+    <fieldset>
+      <legend>1 · Camera</legend>
+      <button id="startCam">Start camera</button>
+    </fieldset>
+    <fieldset>
+      <legend>2 · Portrait</legend>
+      <label class="file">Upload portrait image<input id="upload" type="file" accept="image/*"></label>
+      <button id="snapshot" title="Quick test: paint-filtered photo of you">Test: snapshot me (posterized)</button>
+      <img id="portraitThumb" alt="Current portrait">
+      <small>Use a frontal face that looks straight ahead. If no face is detected, use the fit sliders below.</small>
+    </fieldset>
+    <fieldset>
+      <legend>3 · Mask</legend>
+      <label>Opacity <input id="opacity" type="range" min="0" max="1" step="0.01" value="1"></label>
+      <label>Edge feather <input id="feather" type="range" min="0" max="1" step="0.01" value="0.6"></label>
+      <label>Head extension (hair) <input id="ext" type="range" min="0" max="1" step="0.01" value="0.35"></label>
+      <label>Paint eyes &amp; mouth <input id="fillHoles" type="checkbox" checked></label>
+      <label>Background
+        <select id="bg"><option value="1">camera</option><option value="0.35" selected>dimmed</option><option value="0">black</option></select>
+      </label>
+      <label>Show landmarks <input id="debug" type="checkbox"></label>
+    </fieldset>
+    <fieldset>
+      <legend>Fit (portrait alignment)</legend>
+      <label>Scale <input id="fitScale" type="range" min="0.6" max="1.4" step="0.005" value="1"></label>
+      <label>Offset X <input id="fitX" type="range" min="-0.25" max="0.25" step="0.002" value="0"></label>
+      <label>Offset Y <input id="fitY" type="range" min="-0.25" max="0.25" step="0.002" value="0"></label>
+    </fieldset>
+    <fieldset>
+      <legend>4 · Output stream</legend>
+      <button id="stream">Start output MediaStream</button>
+      <video id="preview" autoplay muted playsinline></video>
+      <small>This is what a WebRTC call would send (not mirrored): <code>canvas.captureStream()</code>.</small>
+    </fieldset>
+  </aside>
+</main>
+<video id="cam" autoplay muted playsinline style="display:none"></video>
+<script type="module" src="./mask.js"></script>
+</body>
+</html>
